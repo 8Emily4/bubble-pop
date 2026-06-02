@@ -1,15 +1,14 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
- */
-
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import { motion, AnimatePresence } from "motion/react";
 
-// --- Constants & Types ---
-const GAME_DURATION = 15;
-const BUBBLE_SPAWN_RATE = 1000;
-const KKABI_AI_SPEED = 3.5;
+const GAME_DURATION = 30;
+const BUBBLE_SPAWN_RATE = 700;
+const SWING_RANGE = 90;
+const SWING_DURATION_MS = 350;
+
+// Game area aspect ratio (portrait, phone-like)
+const GAME_W = 420;
+const GAME_H = 760;
 
 interface Bubble {
   id: number;
@@ -21,196 +20,392 @@ interface Bubble {
   popFrame: number;
 }
 
-interface KkabiState {
+interface Particle {
   x: number;
   y: number;
-  targetId: number | null;
-  isSwinging: boolean;
-  swingTimer: number;
+  vx: number;
+  vy: number;
+  size: number;
+  color: string;
+  life: number;
 }
 
-// --- Helper Functions ---
+interface ScorePopup {
+  x: number;
+  y: number;
+  value: number;
+  life: number;
+}
+
+interface Shockwave {
+  x: number;
+  y: number;
+  radius: number;
+  maxRadius: number;
+  life: number;
+}
+
+const PARTICLE_COLORS = ["#FACC15", "#FEF3C7", "#67E8F9", "#FFFFFF", "#FCD34D"];
+
 const getRandom = (min: number, max: number) => Math.random() * (max - min) + min;
-
-const KkabiSprite = ({ isSwinging }: { isSwinging: boolean }) => (
-  <div className="relative scale-[1.3]">
-    {/* Body - Rounded / Organic shape instead of Square */}
-    <div className="w-[70px] h-[85px] bg-[#539ba0] border-[4px] border-black relative rounded-[40%_40%_30%_30%] shadow-[inset_-6px_-6px_0_rgba(0,0,0,0.15)]">
-      {/* Eyes - Precise Grumpy Arcade Look (integrated into rounded head) */}
-      <div className="absolute top-[22px] left-[12px] w-5 h-4 flex flex-col">
-        <div className="w-full h-[5px] bg-[#2b5155] border-b-[2px] border-black" />
-        <div className="w-full h-full bg-white border-x-[2px] border-b-[2px] border-black flex items-center justify-center">
-          <div className="w-2.5 h-2.5 bg-black" />
-        </div>
-      </div>
-      <div className="absolute top-[22px] right-[12px] w-5 h-4 flex flex-col">
-        <div className="w-full h-[5px] bg-[#2b5155] border-b-[2px] border-black" />
-        <div className="w-full h-full bg-white border-x-[2px] border-b-[2px] border-black flex items-center justify-center">
-          <div className="w-2.5 h-2.5 bg-black" />
-        </div>
-      </div>
-      
-      {/* Mouth - Simple dark line */}
-      <div className="absolute top-[48px] left-1/2 -translate-x-1/2 w-8 h-[3px] bg-black" />
-
-      {/* Leopard Cloth - Rounded bottom to match body */}
-      <div className="absolute bottom-0 w-full h-[35px] bg-[#cc8a2a] border-t-[3px] border-black rounded-b-[25%] overflow-hidden">
-        <div className="absolute top-2 left-3 w-3 h-2 bg-black opacity-40 rounded-full" />
-        <div className="absolute top-5 right-4 w-4 h-3 bg-black opacity-40 rounded-full" />
-        <div className="absolute bottom-3 left-8 w-3 h-4 bg-black opacity-40 rounded-full" />
-      </div>
-    </div>
-    
-    {/* Horns - Small points */}
-    <div className="absolute -top-[8px] left-[22px] w-3 h-5 bg-[#2b5155] border-[3px] border-black rounded-t-full" />
-    <div className="absolute -top-[8px] right-[22px] w-3 h-5 bg-[#2b5155] border-[3px] border-black rounded-t-full" />
-
-    {/* Ears w/ Yellow Earrings */}
-    <div className="absolute top-[30px] -left-[14px] w-5 h-6 bg-[#539ba0] border-[3px] border-black rounded-l-full">
-      <div className="absolute bottom-[-2px] right-0 w-2.5 h-2.5 bg-yellow-400 border-[2px] border-black" />
-    </div>
-    <div className="absolute top-[30px] -right-[14px] w-5 h-6 bg-[#539ba0] border-[3px] border-black rounded-r-full">
-      <div className="absolute bottom-[-2px] left-0 w-2.5 h-2.5 bg-yellow-400 border-[2px] border-black" />
-    </div>
-    
-    {/* Club (Bat) - Brown with spikes */}
-    <motion.div 
-      animate={isSwinging ? { rotate: [0, 125, 0], y: [0, 10, 0] } : { rotate: 18 }}
-      transition={{ duration: 0.22 }}
-      className="absolute top-6 -right-16 w-9 h-24 bg-[#a66a2d] border-[4px] border-black rounded-b-md origin-bottom shadow-lg"
-    >
-      <div className="absolute top-4 left-2 w-2 h-2 bg-black opacity-20" />
-      <div className="absolute top-12 right-2 w-2 h-2 bg-black opacity-20" />
-      <div className="absolute top-20 left-3 w-2 h-2 bg-black opacity-20" />
-    </motion.div>
-  </div>
-);
 
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
   const [gameState, setGameState] = useState<"menu" | "playing" | "gameover">("menu");
   const [timeLeft, setTimeLeft] = useState(GAME_DURATION);
-  const [userScore, setUserScore] = useState(0);
-  const [kkabiScore, setKkabiScore] = useState(0);
-  
+  const [score, setScore] = useState(0);
+
   const bubblesRef = useRef<Bubble[]>([]);
-  const kkabiRef = useRef<KkabiState>({ x: 0, y: 0, targetId: null, isSwinging: false, swingTimer: 0 });
+  const particlesRef = useRef<Particle[]>([]);
+  const popupsRef = useRef<ScorePopup[]>([]);
+  const shockwavesRef = useRef<Shockwave[]>([]);
+  const audioCtxRef = useRef<AudioContext | null>(null);
   const lastSpawnRef = useRef(0);
   const bubbleIdCounter = useRef(0);
   const animationFrameRef = useRef(0);
-  
-  const [kkabiPos, setKkabiPos] = useState({ x: 0, y: 0 });
-  const [isKkabiSwinging, setIsKkabiSwinging] = useState(false);
+  const gameStateRef = useRef(gameState);
+  useEffect(() => { gameStateRef.current = gameState; }, [gameState]);
+
+  const mouseRef = useRef({ x: GAME_W / 2, y: GAME_H / 2 });
+  const [charPos, setCharPos] = useState({ x: GAME_W / 2, y: GAME_H / 2 });
+  const [facingLeft, setFacingLeft] = useState(false);
+  const [swinging, setSwinging] = useState(false);
+  const swingTimerRef = useRef<number | null>(null);
+
+  const [highScore, setHighScore] = useState(() => {
+    if (typeof window === "undefined") return 0;
+    return parseInt(localStorage.getItem("bubble_pop_high_score") || "0", 10);
+  });
 
   const startGame = () => {
     setGameState("playing");
     setTimeLeft(GAME_DURATION);
-    setUserScore(0);
-    setKkabiScore(0);
+    setScore(0);
     bubblesRef.current = [];
-    kkabiRef.current = { x: window.innerWidth / 2, y: window.innerHeight / 3, targetId: null, isSwinging: false, swingTimer: 0 };
-    setKkabiPos({ x: kkabiRef.current.x, y: kkabiRef.current.y });
+    particlesRef.current = [];
+    popupsRef.current = [];
+    shockwavesRef.current = [];
+    lastSpawnRef.current = 0;
+    mouseRef.current = { x: GAME_W / 2, y: GAME_H / 2 };
+    setCharPos({ x: GAME_W / 2, y: GAME_H / 2 });
   };
-
-  const [highScore, setHighScore] = useState(() => {
-    const saved = localStorage.getItem("bubble_pang_high_score");
-    return saved ? parseInt(saved, 10) : 0;
-  });
 
   const endGame = useCallback(() => {
     setGameState("gameover");
-    setUserScore(s => {
+    setScore((s) => {
       if (s > highScore) {
         setHighScore(s);
-        localStorage.setItem("bubble_pang_high_score", s.toString());
+        localStorage.setItem("bubble_pop_high_score", s.toString());
       }
       return s;
     });
   }, [highScore]);
 
-  const spawnBubble = (width: number, height: number) => {
-    const radius = getRandom(25, 40);
-    const newBubble: Bubble = {
+  const spawnBubble = () => {
+    const radius = getRandom(20, 36);
+    bubblesRef.current.push({
       id: bubbleIdCounter.current++,
-      x: getRandom(radius, width - radius),
-      y: height + radius * 2,
+      x: getRandom(radius, GAME_W - radius),
+      y: GAME_H + radius * 2,
       radius,
-      speed: getRandom(2, 4),
+      speed: getRandom(1.2, 2.5),
       isPopping: false,
       popFrame: 0,
-    };
-    bubblesRef.current.push(newBubble);
+    });
   };
 
-  const popBubble = (id: number, byUser: boolean) => {
-    const bubble = bubblesRef.current.find((b) => b.id === id);
-    if (bubble && !bubble.isPopping) {
-      bubble.isPopping = true;
-      if (byUser) {
-        setUserScore((s) => s + 1);
-      } else {
-        setKkabiScore((s) => s + 1);
-        kkabiRef.current.isSwinging = true;
-        kkabiRef.current.swingTimer = 12;
-        setIsKkabiSwinging(true);
-      }
+  const playPopSound = (pitch: number) => {
+    if (typeof window === "undefined") return;
+    if (!audioCtxRef.current) {
+      const AC = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      if (!AC) return;
+      audioCtxRef.current = new AC();
     }
+    const ctx = audioCtxRef.current;
+    if (ctx.state === "suspended") ctx.resume();
+    const now = ctx.currentTime;
+
+    // Main pop oscillator (descending pitch for "bloop")
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(900 + pitch * 80, now);
+    osc.frequency.exponentialRampToValueAtTime(220, now + 0.12);
+    gain.gain.setValueAtTime(0.18, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.2);
+
+    // Noise burst for "spark"
+    const noiseDur = 0.06;
+    const buffer = ctx.createBuffer(1, ctx.sampleRate * noiseDur, ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / data.length);
+    const noise = ctx.createBufferSource();
+    const noiseGain = ctx.createGain();
+    const hp = ctx.createBiquadFilter();
+    hp.type = "highpass";
+    hp.frequency.value = 2000;
+    noiseGain.gain.setValueAtTime(0.06, now);
+    noiseGain.gain.exponentialRampToValueAtTime(0.001, now + noiseDur);
+    noise.buffer = buffer;
+    noise.connect(hp).connect(noiseGain).connect(ctx.destination);
+    noise.start(now);
   };
 
-  const update = (timestamp: number) => {
-    if (gameState !== "playing") return;
+  const spawnPopEffects = (x: number, y: number, radius: number) => {
+    // Particle explosion (18 sparkles flying outward + gravity)
+    const count = 18;
+    for (let i = 0; i < count; i++) {
+      const angle = (i / count) * Math.PI * 2 + Math.random() * 0.4;
+      const speed = 1.5 + Math.random() * 3.5;
+      particlesRef.current.push({
+        x, y,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed - 1, // slight upward bias
+        size: 2 + Math.floor(Math.random() * 3),
+        color: PARTICLE_COLORS[Math.floor(Math.random() * PARTICLE_COLORS.length)],
+        life: 1,
+      });
+    }
+    // Score popup floating up
+    popupsRef.current.push({ x, y: y - radius * 0.5, value: 1, life: 1 });
+    // Expanding shockwave ring
+    shockwavesRef.current.push({
+      x, y,
+      radius: radius * 0.5,
+      maxRadius: radius * 3.2,
+      life: 1,
+    });
+  };
 
+  const swing = () => {
+    if (gameStateRef.current !== "playing") return;
+    setSwinging(true);
+    if (swingTimerRef.current) window.clearTimeout(swingTimerRef.current);
+    swingTimerRef.current = window.setTimeout(() => setSwinging(false), SWING_DURATION_MS);
+
+    let popped = 0;
+    bubblesRef.current.forEach((b) => {
+      if (b.isPopping) return;
+      const dx = b.x - mouseRef.current.x;
+      const dy = b.y - mouseRef.current.y;
+      if (Math.sqrt(dx * dx + dy * dy) < SWING_RANGE + b.radius) {
+        b.isPopping = true;
+        spawnPopEffects(b.x, b.y, b.radius);
+        playPopSound(popped);
+        popped++;
+      }
+    });
+    if (popped > 0) setScore((s) => s + popped);
+  };
+
+  const drawPixelBubble = (ctx: CanvasRenderingContext2D, b: Bubble) => {
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, b.radius, 0, Math.PI * 2);
+    ctx.strokeStyle = "white";
+    ctx.lineWidth = 3;
+    ctx.fillStyle = "rgba(173, 216, 230, 0.4)";
+    ctx.stroke();
+    ctx.fill();
+    ctx.fillStyle = "white";
+    ctx.fillRect(b.x - b.radius * 0.4, b.y - b.radius * 0.4, 6, 6);
+    ctx.restore();
+  };
+
+  const drawPixelPop = (ctx: CanvasRenderingContext2D, b: Bubble) => {
+    ctx.save();
+    const progress = b.popFrame / 12;
+    ctx.fillStyle = progress < 0.5 ? "#FACC15" : "white";
+    ctx.globalAlpha = 1 - progress;
+    for (let i = 0; i < 12; i++) {
+      const angle = (i / 12) * Math.PI * 2 + progress * 2;
+      const d = b.radius * (0.5 + progress * 1.5);
+      const size = 5 * (1 - progress);
+      ctx.fillRect(b.x + Math.cos(angle) * d - size / 2, b.y + Math.sin(angle) * d - size / 2, size, size);
+    }
+    ctx.restore();
+  };
+
+  const drawPixelBackground = (ctx: CanvasRenderingContext2D, width: number, height: number) => {
+    ctx.fillStyle = "#0a3470";
+    ctx.fillRect(0, 0, width, height);
+    ctx.fillStyle = "#1e56a0";
+    ctx.fillRect(0, height * 0.18, width, height);
+    ctx.fillStyle = "#2168b8";
+    ctx.fillRect(0, height * 0.5, width, height);
+
+    // Light rays
+    ctx.fillStyle = "rgba(255,255,255,0.05)";
+    for (let i = 0; i < 5; i++) {
+      const rx = (width / 5) * i + 10;
+      ctx.fillRect(rx, 0, 14, height * 0.55);
+    }
+
+    // BG bubbles
+    ctx.fillStyle = "rgba(255,255,255,0.18)";
+    const bgBubbles: [number, number, number][] = [
+      [0.12, 0.15, 3], [0.85, 0.22, 4], [0.45, 0.12, 3],
+      [0.7, 0.42, 3], [0.25, 0.38, 3], [0.92, 0.55, 3],
+      [0.08, 0.62, 3], [0.55, 0.28, 4], [0.38, 0.55, 3],
+    ];
+    bgBubbles.forEach(([fx, fy, r]) => {
+      const x = fx * width;
+      const y = fy * height;
+      ctx.fillRect(x, y, r, r);
+      ctx.fillRect(x - 1, y + 1, 1, r - 2);
+      ctx.fillRect(x + r, y + 1, 1, r - 2);
+    });
+
+    // Distant fish
+    ctx.fillStyle = "rgba(0,0,0,0.18)";
+    const drawFish = (fx: number, fy: number, dir: number) => {
+      const x = fx * width;
+      const y = fy * height;
+      ctx.fillRect(x, y, 12 * dir, 3);
+      ctx.fillRect(x + 3 * dir, y - 2, 5 * dir, 3);
+      ctx.fillRect(x - 3 * dir, y - 1, 3 * dir, 5);
+    };
+    drawFish(0.2, 0.32, 1);
+    drawFish(0.75, 0.5, -1);
+    drawFish(0.45, 0.7, 1);
+
+    const groundY = height - 90;
+    ctx.fillStyle = "#5dbcae";
+    ctx.fillRect(0, groundY, width, 90);
+    ctx.fillStyle = "#4ba798";
+    ctx.fillRect(0, groundY, width, 4);
+    ctx.fillStyle = "#7dd5c9";
+    for (let i = 0; i < 22; i++) {
+      const sx = (i * 41 + 13) % width;
+      const sy = groundY + 8 + ((i * 29) % 70);
+      ctx.fillRect(sx, sy, 3, 2);
+    }
+    ctx.fillStyle = "#3d8c80";
+    for (let i = 0; i < 14; i++) {
+      const sx = (i * 67 + 5) % width;
+      const sy = groundY + 18 + ((i * 23) % 60);
+      ctx.fillRect(sx, sy, 2, 2);
+    }
+
+    const drawSeaweed = (x: number, h: number, swayPhase: number) => {
+      const sway = Math.sin((Date.now() / 600) + swayPhase) * 3;
+      ctx.fillStyle = "#0d3b2f";
+      ctx.fillRect(x, groundY - h, 12, h);
+      ctx.fillStyle = "#1b4d3e";
+      ctx.fillRect(x + 2, groundY - h + 2, 8, h - 4);
+      ctx.fillStyle = "#266a55";
+      ctx.fillRect(x + 4 + sway, groundY - h + 6, 5, 10);
+      ctx.fillRect(x + 4 + sway, groundY - h + 22, 5, 12);
+      ctx.fillRect(x + 4 + sway, groundY - h + 38, 5, 12);
+      ctx.fillRect(x - 5 + sway, groundY - h + 16, 5, 12);
+      ctx.fillRect(x + 12 - sway, groundY - h + 32, 5, 12);
+    };
+    drawSeaweed(15, 120, 0);
+    drawSeaweed(45, 90, 1.2);
+    drawSeaweed(80, 140, 2.4);
+    drawSeaweed(width - 40, 110, 6);
+    drawSeaweed(width - 80, 85, 7.2);
+    drawSeaweed(width - 120, 130, 8.4);
+
+    // Red coral
+    const cx = width - 100;
+    const cy = groundY;
+    ctx.fillStyle = "#b91c1c";
+    ctx.fillRect(cx, cy - 65, 14, 65);
+    ctx.fillStyle = "#ef4444";
+    ctx.fillRect(cx + 2, cy - 63, 10, 63);
+    ctx.fillStyle = "#fb7185";
+    ctx.fillRect(cx + 4, cy - 55, 3, 50);
+    ctx.fillStyle = "#ef4444";
+    ctx.fillRect(cx - 18, cy - 45, 50, 10);
+    ctx.fillRect(cx - 26, cy - 70, 10, 40);
+
+    // Purple coral
+    const px = width - 160;
+    ctx.fillStyle = "#7e22ce";
+    ctx.fillRect(px, cy - 35, 10, 35);
+    ctx.fillStyle = "#a855f7";
+    ctx.fillRect(px + 2, cy - 33, 6, 33);
+    ctx.fillRect(px - 8, cy - 28, 10, 8);
+    ctx.fillRect(px + 10, cy - 26, 10, 8);
+
+    // Pink coral
+    const drawPinkCoral = (x: number) => {
+      ctx.fillStyle = "#be185d";
+      ctx.fillRect(x, cy - 20, 7, 20);
+      ctx.fillStyle = "#ec4899";
+      ctx.fillRect(x + 1, cy - 18, 5, 18);
+      ctx.fillRect(x - 4, cy - 14, 4, 5);
+      ctx.fillRect(x + 7, cy - 12, 4, 5);
+    };
+    drawPinkCoral(width * 0.3);
+
+    // Treasure
+    const tx = width - 50;
+    ctx.fillStyle = "#9a3412";
+    ctx.fillRect(tx, cy - 22, 22, 22);
+    ctx.fillStyle = "#f97316";
+    ctx.fillRect(tx + 1, cy - 20, 20, 20);
+    ctx.fillStyle = "#fed7aa";
+    ctx.fillRect(tx + 3, cy - 17, 16, 3);
+    ctx.fillStyle = "#ea580c";
+    ctx.fillRect(tx + 8, cy - 13, 5, 9);
+
+    // Anchor
+    ctx.fillStyle = "#854d0e";
+    const ax = width * 0.4;
+    const ay = cy + 30;
+    ctx.fillRect(ax - 1, ay - 1, 5, 18);
+    ctx.fillRect(ax - 7, ay - 3, 17, 5);
+    ctx.fillRect(ax - 11, ay + 12, 25, 4);
+    ctx.fillStyle = "#fbbf24";
+    ctx.fillRect(ax, ay, 3, 16);
+    ctx.fillRect(ax - 6, ay - 2, 15, 3);
+    ctx.fillRect(ax - 10, ay + 13, 23, 3);
+
+    // Starfish
+    const stx = width * 0.5;
+    const sty = cy + 55;
+    ctx.fillStyle = "#facc15";
+    ctx.fillRect(stx - 2, sty - 5, 4, 10);
+    ctx.fillRect(stx - 5, sty - 2, 10, 4);
+
+    // Sparkles
+    ctx.fillStyle = "rgba(255,255,255,0.6)";
+    [
+      [0.15, 0.42], [0.72, 0.31], [0.5, 0.58], [0.88, 0.5],
+      [0.3, 0.65], [0.6, 0.45], [0.4, 0.25],
+    ].forEach(([fx, fy]) => {
+      const x = fx * width;
+      const y = fy * height;
+      ctx.fillRect(x, y, 2, 2);
+    });
+  };
+
+  const update = useCallback((timestamp: number) => {
+    if (gameStateRef.current !== "playing") return;
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    const { width, height } = canvas;
-
     if (timestamp - lastSpawnRef.current > BUBBLE_SPAWN_RATE) {
-      spawnBubble(width, height);
+      spawnBubble();
       lastSpawnRef.current = timestamp;
     }
 
-    const kkabi = kkabiRef.current;
-    if (kkabi.swingTimer > 0) {
-      kkabi.swingTimer--;
-      if (kkabi.swingTimer === 0) {
-        kkabi.isSwinging = false;
-        setIsKkabiSwinging(false);
-        kkabi.targetId = null;
-      }
-    }
+    drawPixelBackground(ctx, GAME_W, GAME_H);
 
-    if (!kkabi.isSwinging) {
-      if (kkabi.targetId === null) {
-        const targets = bubblesRef.current.filter(b => !b.isPopping && b.y < height * 0.8 && b.y > 100);
-        if (targets.length > 0) {
-          const nearest = targets.reduce((prev, curr) => (prev.y < curr.y ? prev : curr));
-          kkabi.targetId = nearest.id;
-        }
-      } else {
-        const target = bubblesRef.current.find(b => b.id === kkabi.targetId);
-        if (target && !target.isPopping) {
-          const dx = target.x - kkabi.x;
-          const dy = (target.y - 12) - kkabi.y;
-          const dist = Math.sqrt(dx * dx + dy * dy);
-          
-          if (dist < 15) {
-            popBubble(target.id, false);
-          } else {
-            kkabi.x += (dx / dist) * KKABI_AI_SPEED;
-            kkabi.y += (dy / dist) * KKABI_AI_SPEED;
-          }
-        } else {
-          kkabi.targetId = null;
-        }
-      }
-    }
-    setKkabiPos({ x: kkabi.x, y: kkabi.y });
-
-    // Pixel Art Background Rendering
-    drawPixelBackground(ctx, width, height);
+    setCharPos((prev) => {
+      const dx = mouseRef.current.x - prev.x;
+      const dy = mouseRef.current.y - prev.y;
+      if (Math.abs(dx) > 2) setFacingLeft(dx < 0);
+      return { x: prev.x + dx * 0.2, y: prev.y + dy * 0.2 };
+    });
 
     bubblesRef.current = bubblesRef.current.filter((b) => {
       if (b.isPopping) {
@@ -223,253 +418,387 @@ export default function App() {
       return b.y + b.radius > -50;
     });
 
-    animationFrameRef.current = requestAnimationFrame(update);
-  };
+    // Shockwave rings
+    shockwavesRef.current = shockwavesRef.current.filter((sw) => {
+      sw.radius += (sw.maxRadius - sw.radius) * 0.18;
+      sw.life -= 0.06;
+      if (sw.life <= 0) return false;
+      ctx.save();
+      ctx.globalAlpha = sw.life * 0.8;
+      ctx.strokeStyle = "#FACC15";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(sw.x, sw.y, sw.radius, 0, Math.PI * 2);
+      ctx.stroke();
+      // Inner ring
+      ctx.globalAlpha = sw.life * 0.5;
+      ctx.strokeStyle = "#FEF3C7";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(sw.x, sw.y, sw.radius * 0.7, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+      return true;
+    });
 
-  const drawPixelBubble = (ctx: CanvasRenderingContext2D, b: Bubble) => {
-    ctx.save();
-    // Clear blue translucent fill
-    ctx.beginPath();
-    ctx.arc(b.x, b.y, b.radius, 0, Math.PI * 2);
-    ctx.strokeStyle = "white";
-    ctx.lineWidth = 3;
-    ctx.fillStyle = "rgba(173, 216, 230, 0.4)"; 
-    ctx.stroke();
-    ctx.fill();
-
-    // Prominent Pixel Glint
-    ctx.fillStyle = "white";
-    ctx.fillRect(b.x - b.radius * 0.4, b.y - b.radius * 0.4, 8, 8);
-    ctx.restore();
-  };
-
-  const drawPixelPop = (ctx: CanvasRenderingContext2D, b: Bubble) => {
-    ctx.save();
-    const progress = b.popFrame / 12;
-    // Sparkle dust effect like in the image
-    ctx.fillStyle = progress < 0.5 ? "#FACC15" : "white";
-    const opacity = 1 - progress;
-    ctx.globalAlpha = opacity;
-    
-    for (let i = 0; i < 10; i++) {
-        const angle = (i / 10) * Math.PI * 2 + progress * 2;
-        const d = b.radius * (0.5 + progress * 1.5);
-        const size = 4 * (1 - progress);
-        ctx.fillRect(b.x + Math.cos(angle) * d - size/2, b.y + Math.sin(angle) * d - size/2, size, size);
-    }
-    ctx.restore();
-  };
-
-  const drawPixelBackground = (ctx: CanvasRenderingContext2D, width: number, height: number) => {
-    // Solid Deep Blue Ocean
-    ctx.fillStyle = "#1e56a0";
-    ctx.fillRect(0, 0, width, height);
-
-    // Light Teal Seabed Floor
-    ctx.fillStyle = "#5dbcae"; 
-    ctx.fillRect(0, height - 70, width, 70);
-    
-    // Seaweed - Simple pixel clusters
-    ctx.fillStyle = "#1b4d3e";
-    const drawSeaweed = (x: number, h: number) => {
-      ctx.fillRect(x, height - 70 - h, 12, h);
-      ctx.fillRect(x - 4, height - 70 - h + 20, 4, 15);
-      ctx.fillRect(x + 12, height - 70 - h + 40, 4, 15);
-    };
-
-    drawSeaweed(40, 100);
-    drawSeaweed(80, 140);
-    drawSeaweed(140, 80);
-    drawSeaweed(width - 100, 120);
-    drawSeaweed(width - 160, 90);
-
-    // Coral - Red branched
-    ctx.fillStyle = "#ef4444";
-    const cx = width - 120;
-    const cy = height - 70;
-    ctx.fillRect(cx, cy - 60, 15, 60);
-    ctx.fillRect(cx - 20, cy - 40, 50, 10);
-    ctx.fillRect(cx - 30, cy - 70, 10, 40);
-    ctx.fillRect(cx + 30, cy - 55, 10, 25);
-
-    // Small rocks/treasure
-    ctx.fillStyle = "#cc8a2a";
-    ctx.fillRect(width * 0.4, cy + 20, 15, 10);
-    ctx.fillRect(width * 0.6, cy + 40, 10, 8);
-  };
-
-  useEffect(() => {
-    const handleResize = () => {
-      if (canvasRef.current) {
-        canvasRef.current.width = window.innerWidth;
-        canvasRef.current.height = window.innerHeight;
+    // Particles
+    particlesRef.current = particlesRef.current.filter((p) => {
+      p.x += p.vx;
+      p.y += p.vy;
+      p.vy += 0.18; // gravity
+      p.vx *= 0.97;
+      p.vy *= 0.99;
+      p.life -= 0.025;
+      if (p.life <= 0) return false;
+      ctx.save();
+      ctx.globalAlpha = Math.min(1, p.life * 1.5);
+      ctx.fillStyle = p.color;
+      const s = p.size;
+      ctx.fillRect(Math.floor(p.x - s / 2), Math.floor(p.y - s / 2), s, s);
+      // Cross sparkle for bigger particles
+      if (s >= 3) {
+        ctx.fillRect(Math.floor(p.x - s / 2 - 1), Math.floor(p.y - 0.5), 1, 1);
+        ctx.fillRect(Math.floor(p.x + s / 2), Math.floor(p.y - 0.5), 1, 1);
       }
-    };
-    window.addEventListener("resize", handleResize);
-    handleResize();
-    return () => window.removeEventListener("resize", handleResize);
+      ctx.restore();
+      return true;
+    });
+
+    // Score popups
+    popupsRef.current = popupsRef.current.filter((p) => {
+      p.y -= 1.4;
+      p.life -= 0.022;
+      if (p.life <= 0) return false;
+      ctx.save();
+      ctx.globalAlpha = Math.min(1, p.life * 1.3);
+      ctx.font = "bold 16px 'Press Start 2P', monospace";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.lineWidth = 4;
+      ctx.strokeStyle = "#000";
+      ctx.strokeText(`+${p.value}`, p.x, p.y);
+      ctx.fillStyle = "#FACC15";
+      ctx.fillText(`+${p.value}`, p.x, p.y);
+      ctx.restore();
+      return true;
+    });
+
+    animationFrameRef.current = requestAnimationFrame(update);
   }, []);
 
   useEffect(() => {
-    if (gameState === "playing") {
-      animationFrameRef.current = requestAnimationFrame(update);
-      const timer = setInterval(() => {
-        setTimeLeft((prev) => {
-          if (prev <= 1) {
-            clearInterval(timer);
-            endGame();
-            return 0;
-          }
-          return prev - 1;
-        });
-      }, 1000);
-      return () => {
-        cancelAnimationFrame(animationFrameRef.current);
-        clearInterval(timer);
-      };
+    if (canvasRef.current) {
+      canvasRef.current.width = GAME_W;
+      canvasRef.current.height = GAME_H;
     }
-  }, [gameState, endGame]);
+  }, []);
 
-  const handleInteraction = (e: React.MouseEvent | React.TouchEvent) => {
+  useEffect(() => {
     if (gameState !== "playing") return;
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const rect = canvas.getBoundingClientRect();
-    const x = ('touches' in e) ? e.touches[0].clientX - rect.left : (e as React.MouseEvent).clientX - rect.left;
-    const y = ('touches' in e) ? e.touches[0].clientY - rect.top : (e as React.MouseEvent).clientY - rect.top;
+    animationFrameRef.current = requestAnimationFrame(update);
+    const timer = window.setInterval(() => {
+      setTimeLeft((prev) => {
+        if (prev <= 1) {
+          window.clearInterval(timer);
+          endGame();
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => {
+      cancelAnimationFrame(animationFrameRef.current);
+      window.clearInterval(timer);
+    };
+  }, [gameState, endGame, update]);
 
-    const clicked = bubblesRef.current.find(b => {
-      if (b.isPopping) return false;
-      const d = Math.sqrt((x - b.x) ** 2 + (y - b.y) ** 2);
-      return d < b.radius + 15;
-    });
+  useEffect(() => () => {
+    if (swingTimerRef.current) window.clearTimeout(swingTimerRef.current);
+  }, []);
 
-    if (clicked) {
-      popBubble(clicked.id, true);
-    }
+  const stageToGameCoords = (clientX: number, clientY: number) => {
+    if (!stageRef.current) return { x: 0, y: 0 };
+    const rect = stageRef.current.getBoundingClientRect();
+    const scaleX = GAME_W / rect.width;
+    const scaleY = GAME_H / rect.height;
+    return {
+      x: (clientX - rect.left) * scaleX,
+      y: (clientY - rect.top) * scaleY,
+    };
   };
 
+  const handlePointerMove = (e: React.PointerEvent) => {
+    mouseRef.current = stageToGameCoords(e.clientX, e.clientY);
+  };
+
+  const handlePointerDown = (e: React.PointerEvent) => {
+    mouseRef.current = stageToGameCoords(e.clientX, e.clientY);
+    swing();
+  };
+
+  const timePercent = (timeLeft / GAME_DURATION) * 100;
+  const isLowTime = timeLeft <= 5;
+
   return (
-    <div className="relative w-full h-screen overflow-hidden bg-black select-none font-pixel uppercase">
-      {/* CRT Scanline Effect Overlay */}
-      <div className="absolute inset-0 z-40 pointer-events-none opacity-10 bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.25)_50%),linear-gradient(90deg,rgba(255,0,0,0.06),rgba(0,255,0,0.02),rgba(0,0,255,0.06))] bg-[length:100%_2px,3px_100%]" />
-      
-      <canvas
-        ref={canvasRef}
-        onMouseDown={handleInteraction}
-        onTouchStart={handleInteraction}
-        className="w-full h-full cursor-crosshair"
-      />
+    <div className="fixed inset-0 flex items-center justify-center bg-gradient-to-br from-slate-900 via-blue-950 to-slate-900 p-2 sm:p-6 font-pixel">
+      {/* Phone-like portrait frame */}
+      <div
+        className="relative w-full max-w-[420px] bg-black rounded-[36px] sm:rounded-[44px] p-2 sm:p-3 shadow-[0_30px_80px_-20px_rgba(0,0,0,0.8)] border-[3px] border-zinc-700"
+        style={{ aspectRatio: `${GAME_W} / ${GAME_H}`, maxHeight: "95vh" }}
+      >
+        {/* Notch */}
+        <div className="absolute top-2 sm:top-3 left-1/2 -translate-x-1/2 w-28 h-5 sm:h-6 bg-black rounded-b-2xl z-50 flex items-center justify-center gap-2">
+          <div className="w-1.5 h-1.5 rounded-full bg-zinc-700" />
+        </div>
 
-      {/* --- HUD --- */}
-      <AnimatePresence>
-        {gameState === "playing" && (
-          <div className="absolute inset-0 pointer-events-none">
-            {/* Top Bar HUD */}
-            <div className="absolute top-8 w-full flex flex-col items-center gap-1 text-white">
-              <div className="text-[10px] text-yellow-400 drop-shadow-md">HIGH SCORE: {highScore.toString().padStart(5, '0')}</div>
-              <div className="text-2xl drop-shadow-[2px_2px_0_rgba(0,0,0,0.5)]">TIME: {timeLeft}s</div>
-              <div className="text-xl drop-shadow-[2px_2px_0_rgba(0,0,0,0.5)] flex gap-4">
-                <span className="text-blue-300">ME:{userScore}</span> 
-                <span>VS</span> 
-                <span className="text-red-400">KKABI:{kkabiScore}</span>
-              </div>
-            </div>
+        {/* Game stage */}
+        <div
+          ref={stageRef}
+          onPointerMove={handlePointerMove}
+          onPointerDown={handlePointerDown}
+          className="relative w-full h-full overflow-hidden rounded-[28px] sm:rounded-[34px] cursor-none touch-none select-none"
+          style={{ aspectRatio: `${GAME_W} / ${GAME_H}` }}
+        >
+          {/* CRT scanlines */}
+          <div className="absolute inset-0 z-40 pointer-events-none opacity-15 bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.25)_50%)] bg-[length:100%_2px]" />
 
-            {/* Kkabi Character Overlay */}
-            <div 
-              style={{ 
-                position: 'absolute', 
-                left: kkabiPos.x, 
-                top: kkabiPos.y, 
-                transform: 'translate(-50%, -50%)',
-                zIndex: 10
-              }}
-            >
-              <div className="relative">
-                <KkabiSprite isSwinging={isKkabiSwinging} />
-                
-                {/* Impact Effect Cloud when swinging */}
-                {isKkabiSwinging && (
-                  <motion.div 
-                    initial={{ scale: 0.5, opacity: 0 }}
-                    animate={{ scale: 1.3, opacity: 0.9, y: [0, -5, 0] }}
-                    exit={{ opacity: 0 }}
-                    transition={{ duration: 0.15 }}
-                    className="absolute -bottom-2 left-1/2 -translate-x-1/2 w-28 h-18 pointer-events-none"
-                  >
-                    {/* Retro Impact Smoke */}
-                    <div className="w-full h-full bg-[#cc8a2a] rounded-full border-2 border-white/50" />
-                  </motion.div>
-                )}
-              </div>
-            </div>
+          <canvas
+            ref={canvasRef}
+            className="absolute inset-0 w-full h-full"
+            style={{ imageRendering: "pixelated" }}
+          />
 
-            {/* Restart Button */}
-            <div className="absolute bottom-6 left-6 pointer-events-auto">
-              <button
-                onClick={() => endGame()}
-                className="bg-black border-2 border-white text-white px-5 py-2 text-[10px] tracking-widest uppercase hover:bg-white hover:text-black transition-all active:scale-95"
+          {gameState === "playing" && (
+            <>
+              {/* Character — swaps between idle and swing pose */}
+              <motion.div
+                animate={{
+                  left: `${(charPos.x / GAME_W) * 100}%`,
+                  top: `${(charPos.y / GAME_H) * 100}%`,
+                  scaleX: facingLeft ? -1 : 1,
+                }}
+                transition={{ type: "spring", stiffness: 280, damping: 20 }}
+                style={{
+                  position: "absolute",
+                  width: "30%",
+                  marginLeft: "-15%",
+                  marginTop: "-15%",
+                  zIndex: 20,
+                  pointerEvents: "none",
+                }}
               >
-                RESTART
-              </button>
-            </div>
-          </div>
-        )}
-      </AnimatePresence>
+                <AnimatePresence mode="wait">
+                  {swinging ? (
+                    <motion.img
+                      key="swing"
+                      src="/swing.png"
+                      alt="swing"
+                      draggable={false}
+                      initial={{ scale: 0.85, y: -10 }}
+                      animate={{ scale: [0.85, 1.1, 1], y: [-10, 5, 0] }}
+                      exit={{ scale: 1, opacity: 0.7 }}
+                      transition={{ duration: SWING_DURATION_MS / 1000, times: [0, 0.4, 1] }}
+                      style={{ imageRendering: "pixelated", width: "100%", height: "auto", display: "block" }}
+                      className="drop-shadow-[0_3px_0_rgba(0,0,0,0.4)]"
+                    />
+                  ) : (
+                    <motion.img
+                      key="idle"
+                      src="/character.png"
+                      alt="character"
+                      draggable={false}
+                      animate={{ y: [0, -4, 0] }}
+                      transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
+                      style={{ imageRendering: "pixelated", width: "100%", height: "auto", display: "block" }}
+                      className="drop-shadow-[0_3px_0_rgba(0,0,0,0.4)]"
+                    />
+                  )}
+                </AnimatePresence>
+              </motion.div>
 
-      {/* --- Overlay (Menu/Gameover) --- */}
-      <AnimatePresence>
-        {(gameState === "menu" || gameState === "gameover") && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="absolute inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
-          >
-            <div className="text-center p-12 bg-blue-900 border-8 border-white shadow-[12px_12px_0_rgba(0,0,0,0.5)] max-w-lg w-full relative">
-              <div className="absolute -top-10 left-1/2 -translate-x-1/2 bg-yellow-400 text-black px-6 py-2 font-bold text-xs border-4 border-black">
-                ARCADE CLASSIC
-              </div>
-
-              <h1 className="text-4xl text-white mb-12 tracking-[0.2em] leading-relaxed drop-shadow-[4px_4px_0_rgba(0,0,0,0.5)]">
-                {gameState === "menu" ? "BUBBLE\nPANG PANG" : "GAME OVER"}
-              </h1>
-
-              {gameState === "gameover" && (
-                <div className="mb-12 space-y-6">
-                  <div className="text-xl text-blue-200">
-                    FINAL SCORE: {userScore}
-                  </div>
-                  <div className="text-4xl text-white font-bold tracking-widest border-y-4 border-white/20 py-4">
-                    {userScore > kkabiScore ? "USER WIN!" : userScore === kkabiScore ? "DRAW GAME!" : "KKABI WIN!"}
-                  </div>
-                </div>
+              {/* Swing range ring */}
+              {swinging && (
+                <motion.div
+                  key={`swing-${Date.now()}`}
+                  initial={{ scale: 0.4, opacity: 0.9 }}
+                  animate={{ scale: 1.4, opacity: 0 }}
+                  transition={{ duration: SWING_DURATION_MS / 1000 }}
+                  style={{
+                    position: "absolute",
+                    left: `${(charPos.x / GAME_W) * 100}%`,
+                    top: `${(charPos.y / GAME_H) * 100}%`,
+                    width: `${(SWING_RANGE * 2 / GAME_W) * 100}%`,
+                    height: `${(SWING_RANGE * 2 / GAME_W) * 100}%`,
+                    marginLeft: `${(-SWING_RANGE / GAME_W) * 100}%`,
+                    marginTop: `${(-SWING_RANGE / GAME_W) * 100}%`,
+                    borderRadius: "50%",
+                    border: "3px solid #FACC15",
+                    zIndex: 15,
+                    pointerEvents: "none",
+                  }}
+                />
               )}
 
-              <div className="space-y-6">
-                <motion.button
-                  whileHover={{ scale: 1.05 }}
-                  whileTap={{ scale: 0.95 }}
-                  onClick={startGame}
-                  className="bg-white text-black px-12 py-4 font-bold text-xl border-4 border-black shadow-[6px_6px_0_#000]"
+              {/* Smash starburst */}
+              {swinging && (
+                <motion.div
+                  key={`smash-${Date.now()}`}
+                  initial={{ scale: 0, opacity: 1 }}
+                  animate={{ scale: [0, 1.6, 1.8], opacity: [1, 1, 0] }}
+                  transition={{ duration: SWING_DURATION_MS / 1000, times: [0, 0.4, 1] }}
+                  style={{
+                    position: "absolute",
+                    left: `${(charPos.x / GAME_W) * 100}%`,
+                    top: `${((charPos.y + 30) / GAME_H) * 100}%`,
+                    width: "22%",
+                    aspectRatio: "1.5",
+                    marginLeft: "-11%",
+                    marginTop: "-6%",
+                    zIndex: 19,
+                    pointerEvents: "none",
+                  }}
                 >
-                  {gameState === "menu" ? "PLAYER 1 START" : "REPLAY"}
-                </motion.button>
-                
-                <p className="text-[10px] text-yellow-400 tracking-widest animate-pulse mt-4">
-                  - PRESS BUTTON TO START -
-                </p>
+                  <svg viewBox="0 0 120 80" width="100%" height="100%" style={{ shapeRendering: "crispEdges" }}>
+                    <polygon points="60,0 70,28 100,18 78,40 110,50 76,52 95,75 60,55 28,75 50,52 12,50 42,40 18,18 50,28" fill="#FACC15" stroke="#000" strokeWidth="3" />
+                    <polygon points="60,12 67,30 90,24 76,40 95,48 75,50 60,60 45,50 25,48 44,40 30,24 53,30" fill="#FEF3C7" />
+                  </svg>
+                </motion.div>
+              )}
+
+              {/* HUD top bar */}
+              <div className="absolute top-3 left-3 right-3 z-30 pointer-events-none">
+                <div className="flex items-center justify-between gap-2">
+                  {/* Score chip */}
+                  <div className="bg-black/60 backdrop-blur-sm border-2 border-white/30 rounded-xl px-3 py-1.5 flex items-center gap-1.5">
+                    <span className="text-[8px] text-yellow-300">SCORE</span>
+                    <span className="text-base text-white font-bold">{score}</span>
+                  </div>
+                  {/* High score chip */}
+                  <div className="bg-black/60 backdrop-blur-sm border-2 border-white/30 rounded-xl px-3 py-1.5 flex items-center gap-1.5">
+                    <span className="text-[8px] text-yellow-300">★</span>
+                    <span className="text-xs text-white">{highScore}</span>
+                  </div>
+                </div>
+                {/* Time progress bar */}
+                <div className="mt-2 bg-black/60 backdrop-blur-sm rounded-full h-3 border-2 border-white/30 overflow-hidden">
+                  <motion.div
+                    animate={{ width: `${timePercent}%` }}
+                    transition={{ duration: 0.3 }}
+                    className={`h-full ${isLowTime ? "bg-red-500" : "bg-gradient-to-r from-cyan-400 to-blue-500"}`}
+                  />
+                </div>
+                <div className="text-center mt-1">
+                  <span className={`text-[10px] ${isLowTime ? "text-red-400 animate-pulse" : "text-white"} drop-shadow-[1px_1px_0_rgba(0,0,0,0.8)]`}>
+                    ⏱ {timeLeft}s
+                  </span>
+                </div>
               </div>
-              
-              <div className="mt-10 pt-6 border-t-2 border-white/10 flex justify-between items-center text-[10px] text-blue-300">
-                <span>© 2026 USER MADE</span>
-                <span>KKABI LEGACY</span>
+
+              {/* Pause/Restart button */}
+              <div className="absolute bottom-3 right-3 z-30 pointer-events-auto">
+                <button
+                  onClick={endGame}
+                  aria-label="restart"
+                  className="bg-black/70 backdrop-blur-sm border-2 border-white/50 text-white w-11 h-11 rounded-full flex items-center justify-center text-base hover:bg-white/20 active:scale-95 transition"
+                >
+                  ⟲
+                </button>
               </div>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+            </>
+          )}
+
+          <AnimatePresence>
+            {(gameState === "menu" || gameState === "gameover") && (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="absolute inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm px-6"
+              >
+                <motion.div
+                  initial={{ y: 30, opacity: 0 }}
+                  animate={{ y: 0, opacity: 1 }}
+                  transition={{ delay: 0.05 }}
+                  className="w-full bg-gradient-to-b from-blue-800 to-blue-950 border-4 border-cyan-400 rounded-3xl p-6 shadow-[0_20px_50px_-10px_rgba(34,211,238,0.4)] text-center"
+                >
+                  {gameState === "menu" ? (
+                    <>
+                      <div className="text-[10px] text-cyan-300 tracking-[0.3em] mb-1">ARCADE</div>
+                      <h1 className="text-3xl text-white tracking-[0.15em] leading-tight drop-shadow-[3px_3px_0_rgba(0,0,0,0.5)] mb-1">
+                        BUBBLE
+                      </h1>
+                      <h1 className="text-3xl text-yellow-300 tracking-[0.15em] leading-tight drop-shadow-[3px_3px_0_rgba(0,0,0,0.5)] mb-6">
+                        POP
+                      </h1>
+
+                      <div className="bg-black/40 rounded-2xl p-4 mb-6 border border-white/10">
+                        <p className="text-[10px] text-blue-100 leading-loose">
+                          🖱️ 손가락(마우스)으로 캐릭터 이동<br />
+                          💥 탭 / 클릭으로 클럽 휘두르기<br />
+                          🫧 주변 물방울 한 번에 터뜨리기!
+                        </p>
+                      </div>
+
+                      <div className="flex items-center justify-center gap-1.5 mb-6 text-[10px] text-cyan-300">
+                        <span>최고 점수</span>
+                        <span className="text-yellow-300">★</span>
+                        <span className="text-white font-bold">{highScore}</span>
+                      </div>
+
+                      <motion.button
+                        whileTap={{ scale: 0.93 }}
+                        whileHover={{ scale: 1.03 }}
+                        onClick={startGame}
+                        className="w-full bg-gradient-to-b from-yellow-300 to-yellow-500 text-black px-8 py-4 font-bold text-lg border-b-4 border-yellow-700 rounded-2xl shadow-[0_6px_0_rgba(0,0,0,0.3)] tracking-widest"
+                      >
+                        START
+                      </motion.button>
+                    </>
+                  ) : (
+                    <>
+                      <div className="text-[10px] text-red-300 tracking-[0.3em] mb-1">FINISHED</div>
+                      <h1 className="text-3xl text-white tracking-[0.15em] mb-5 drop-shadow-[3px_3px_0_rgba(0,0,0,0.5)]">
+                        GAME OVER
+                      </h1>
+
+                      <div className="bg-black/40 rounded-2xl p-5 mb-5 border border-white/10">
+                        <div className="text-[10px] text-cyan-300 mb-1">SCORE</div>
+                        <div className="text-5xl text-yellow-300 font-bold tracking-widest drop-shadow-[2px_2px_0_rgba(0,0,0,0.5)]">
+                          {score}
+                        </div>
+                        {score > 0 && score >= highScore && (
+                          <motion.div
+                            animate={{ scale: [1, 1.1, 1] }}
+                            transition={{ duration: 0.6, repeat: Infinity }}
+                            className="text-yellow-300 text-xs mt-3"
+                          >
+                            ⭐ NEW HIGH SCORE ⭐
+                          </motion.div>
+                        )}
+                      </div>
+
+                      <div className="flex items-center justify-center gap-1.5 mb-5 text-[10px] text-cyan-300">
+                        <span>최고 점수</span>
+                        <span className="text-yellow-300">★</span>
+                        <span className="text-white font-bold">{highScore}</span>
+                      </div>
+
+                      <motion.button
+                        whileTap={{ scale: 0.93 }}
+                        whileHover={{ scale: 1.03 }}
+                        onClick={startGame}
+                        className="w-full bg-gradient-to-b from-cyan-300 to-cyan-500 text-black px-8 py-4 font-bold text-lg border-b-4 border-cyan-700 rounded-2xl shadow-[0_6px_0_rgba(0,0,0,0.3)] tracking-widest"
+                      >
+                        REPLAY
+                      </motion.button>
+                    </>
+                  )}
+                </motion.div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+      </div>
     </div>
   );
 }
