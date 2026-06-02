@@ -1,0 +1,25 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+
+# Vercel
+.vercel
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea
+
+# TypeScript
+*.tsbuildinfo
+
+# Vite local env
+*.local
+
+# Windows
+Thumbs.db
