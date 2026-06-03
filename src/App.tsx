@@ -75,7 +75,7 @@ export default function App() {
   const [charPos, setCharPos] = useState({ x: GAME_W / 2, y: GAME_H / 2 });
   const [facingLeft, setFacingLeft] = useState(false);
   const lastFlipXRef = useRef(GAME_W / 2);
-  const FLIP_THRESHOLD = 40;
+  const FLIP_THRESHOLD = 20;
   const [swingPhase, setSwingPhase] = useState<"idle" | "mid" | "down">("idle");
   const swingPhaseTimersRef = useRef<number[]>([]);
   const [swinging, setSwinging] = useState(false);
@@ -526,7 +526,14 @@ export default function App() {
     setCharPos((prev) => {
       const dx = mouseRef.current.x - prev.x;
       const dy = mouseRef.current.y - prev.y;
-      return { x: prev.x + dx * 0.2, y: prev.y + dy * 0.2 };
+      // Direction flip with hysteresis: only flip after moving past threshold
+      const distFromAnchor = mouseRef.current.x - lastFlipXRef.current;
+      if (Math.abs(distFromAnchor) > FLIP_THRESHOLD) {
+        const newFacing = distFromAnchor < 0;
+        setFacingLeft((cur) => (cur !== newFacing ? newFacing : cur));
+        lastFlipXRef.current = mouseRef.current.x;
+      }
+      return { x: prev.x + dx * 0.22, y: prev.y + dy * 0.22 };
     });
 
     bubblesRef.current = bubblesRef.current.filter((b) => {
@@ -655,23 +662,29 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bgmOn, gameState]);
 
-  const stageToGameCoords = (clientX: number, clientY: number) => {
+  const TOUCH_Y_OFFSET = 130; // character appears this many px ABOVE the finger touch
+
+  const stageToGameCoords = (clientX: number, clientY: number, isTouch: boolean) => {
     if (!stageRef.current) return { x: 0, y: 0 };
     const rect = stageRef.current.getBoundingClientRect();
     const scaleX = GAME_W / rect.width;
     const scaleY = GAME_H / rect.height;
+    const x = (clientX - rect.left) * scaleX;
+    let y = (clientY - rect.top) * scaleY;
+    if (isTouch) y -= TOUCH_Y_OFFSET; // lift above finger
+    // Clamp to stage so character doesn't drift off-screen
     return {
-      x: (clientX - rect.left) * scaleX,
-      y: (clientY - rect.top) * scaleY,
+      x: Math.max(20, Math.min(GAME_W - 20, x)),
+      y: Math.max(20, Math.min(GAME_H - 20, y)),
     };
   };
 
   const handlePointerMove = (e: React.PointerEvent) => {
-    mouseRef.current = stageToGameCoords(e.clientX, e.clientY);
+    mouseRef.current = stageToGameCoords(e.clientX, e.clientY, e.pointerType === "touch");
   };
 
   const handlePointerDown = (e: React.PointerEvent) => {
-    mouseRef.current = stageToGameCoords(e.clientX, e.clientY);
+    mouseRef.current = stageToGameCoords(e.clientX, e.clientY, e.pointerType === "touch");
     swing();
   };
 
@@ -722,9 +735,11 @@ export default function App() {
                 animate={{
                   left: `${(charPos.x / GAME_W) * 100}%`,
                   top: `${(charPos.y / GAME_H) * 100}%`,
+                  scaleX: facingLeft ? -1 : 1,
                 }}
                 transition={{
                   type: "spring", stiffness: 280, damping: 20,
+                  scaleX: { type: "tween", duration: 0.2, ease: [0.4, 0, 0.2, 1] },
                 }}
                 style={{
                   position: "absolute",
