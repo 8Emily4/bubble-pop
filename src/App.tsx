@@ -882,8 +882,8 @@ export default function App() {
                   />
                 </div>
                 <div className="text-center mt-1">
-                  <span className={`text-[10px] ${isLowTime ? "text-red-400 animate-pulse" : "text-white"} drop-shadow-[1px_1px_0_rgba(0,0,0,0.8)]`}>
-                    ⏱ {timeLeft}s
+                  <span className={`text-[10px] tracking-widest ${isLowTime ? "text-red-400 animate-pulse" : "text-white"} drop-shadow-[1px_1px_0_rgba(0,0,0,0.8)]`}>
+                    TIME {timeLeft}
                   </span>
                 </div>
               </div>
@@ -893,16 +893,32 @@ export default function App() {
                 <button
                   onClick={() => setBgmOn((v) => !v)}
                   aria-label="toggle music"
-                  className="bg-black/70 backdrop-blur-sm border-2 border-white/50 text-white w-11 h-11 rounded-full flex items-center justify-center text-base hover:bg-white/20 active:scale-95 transition"
+                  className="bg-black/70 backdrop-blur-sm border-2 border-white/50 text-white w-11 h-11 rounded-full flex items-center justify-center hover:bg-white/20 active:scale-95 transition"
                 >
-                  {bgmOn ? "🎵" : "🔇"}
+                  {bgmOn ? (
+                    <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden>
+                      <path d="M9 18V5l12-2v13" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+                      <circle cx="6" cy="18" r="3" />
+                      <circle cx="18" cy="16" r="3" />
+                    </svg>
+                  ) : (
+                    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                      <path d="M9 18V5l12-2v13" />
+                      <circle cx="6" cy="18" r="3" />
+                      <circle cx="18" cy="16" r="3" />
+                      <line x1="3" y1="3" x2="21" y2="21" stroke="#f87171" strokeWidth="2.5" />
+                    </svg>
+                  )}
                 </button>
                 <button
                   onClick={endGame}
                   aria-label="restart"
-                  className="bg-black/70 backdrop-blur-sm border-2 border-white/50 text-white w-11 h-11 rounded-full flex items-center justify-center text-base hover:bg-white/20 active:scale-95 transition"
+                  className="bg-black/70 backdrop-blur-sm border-2 border-white/50 text-white w-11 h-11 rounded-full flex items-center justify-center hover:bg-white/20 active:scale-95 transition"
                 >
-                  ⟲
+                  <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                    <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
+                    <path d="M3 3v5h5" />
+                  </svg>
                 </button>
               </div>
             </>
