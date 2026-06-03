@@ -662,7 +662,9 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bgmOn, gameState]);
 
-  const TOUCH_Y_OFFSET = 130; // character appears this many px ABOVE the finger touch
+  const TOUCH_Y_OFFSET = 130;
+  const TAP_MOVE_THRESHOLD = 10; // px — moved less = tap (swing), more = drag (move)
+  const TAP_TIME_THRESHOLD = 300; // ms
 
   const stageToGameCoords = (clientX: number, clientY: number, isTouch: boolean) => {
     if (!stageRef.current) return { x: 0, y: 0 };
@@ -671,21 +673,53 @@ export default function App() {
     const scaleY = GAME_H / rect.height;
     const x = (clientX - rect.left) * scaleX;
     let y = (clientY - rect.top) * scaleY;
-    if (isTouch) y -= TOUCH_Y_OFFSET; // lift above finger
-    // Clamp to stage so character doesn't drift off-screen
+    if (isTouch) y -= TOUCH_Y_OFFSET;
     return {
       x: Math.max(20, Math.min(GAME_W - 20, x)),
       y: Math.max(20, Math.min(GAME_H - 20, y)),
     };
   };
 
-  const handlePointerMove = (e: React.PointerEvent) => {
-    mouseRef.current = stageToGameCoords(e.clientX, e.clientY, e.pointerType === "touch");
-  };
+  const pointerStartRef = useRef<{ x: number; y: number; t: number; touch: boolean } | null>(null);
+  const draggedRef = useRef(false);
 
   const handlePointerDown = (e: React.PointerEvent) => {
-    mouseRef.current = stageToGameCoords(e.clientX, e.clientY, e.pointerType === "touch");
-    swing();
+    const isTouch = e.pointerType === "touch";
+    const coords = stageToGameCoords(e.clientX, e.clientY, isTouch);
+    pointerStartRef.current = { x: coords.x, y: coords.y, t: Date.now(), touch: isTouch };
+    draggedRef.current = false;
+    // On TOUCH, immediately move to start dragging position so character follows naturally
+    if (isTouch) mouseRef.current = coords;
+  };
+
+  const handlePointerMove = (e: React.PointerEvent) => {
+    const isTouch = e.pointerType === "touch";
+    const coords = stageToGameCoords(e.clientX, e.clientY, isTouch);
+
+    if (pointerStartRef.current) {
+      const dx = coords.x - pointerStartRef.current.x;
+      const dy = coords.y - pointerStartRef.current.y;
+      if (Math.sqrt(dx * dx + dy * dy) > TAP_MOVE_THRESHOLD) {
+        draggedRef.current = true;
+      }
+    }
+
+    // PC mouse: hover always moves character (no button needed)
+    // Touch: only move while finger is down (pointerStartRef set)
+    if (!isTouch || pointerStartRef.current) {
+      mouseRef.current = coords;
+    }
+  };
+
+  const handlePointerUp = (e: React.PointerEvent) => {
+    const start = pointerStartRef.current;
+    pointerStartRef.current = null;
+    if (!start) return;
+    const elapsed = Date.now() - start.t;
+    // Tap detection: short duration + small movement → swing
+    if (!draggedRef.current && elapsed < TAP_TIME_THRESHOLD) {
+      swing();
+    }
   };
 
   const timePercent = (timeLeft / GAME_DURATION) * 100;
@@ -708,6 +742,8 @@ export default function App() {
           ref={stageRef}
           onPointerMove={handlePointerMove}
           onPointerDown={handlePointerDown}
+          onPointerUp={handlePointerUp}
+          onPointerCancel={handlePointerUp}
           className="relative w-full h-full overflow-hidden rounded-[28px] sm:rounded-[34px] cursor-none touch-none select-none"
           style={{
             aspectRatio: `${GAME_W} / ${GAME_H}`,
