@@ -57,10 +57,14 @@ export default function App() {
   const [score, setScore] = useState(0);
 
   const bubblesRef = useRef<Bubble[]>([]);
+  const bubbleImgRef = useRef<HTMLImageElement | null>(null);
   const particlesRef = useRef<Particle[]>([]);
   const popupsRef = useRef<ScorePopup[]>([]);
   const shockwavesRef = useRef<Shockwave[]>([]);
   const audioCtxRef = useRef<AudioContext | null>(null);
+  const bgmGainRef = useRef<GainNode | null>(null);
+  const bgmStopRef = useRef<(() => void) | null>(null);
+  const [bgmOn, setBgmOn] = useState(true);
   const lastSpawnRef = useRef(0);
   const bubbleIdCounter = useRef(0);
   const animationFrameRef = useRef(0);
@@ -70,29 +74,48 @@ export default function App() {
   const mouseRef = useRef({ x: GAME_W / 2, y: GAME_H / 2 });
   const [charPos, setCharPos] = useState({ x: GAME_W / 2, y: GAME_H / 2 });
   const [facingLeft, setFacingLeft] = useState(false);
+  const lastFlipXRef = useRef(GAME_W / 2);
+  const FLIP_THRESHOLD = 40;
+  const [swingPhase, setSwingPhase] = useState<"idle" | "mid" | "down">("idle");
+  const swingPhaseTimersRef = useRef<number[]>([]);
   const [swinging, setSwinging] = useState(false);
   const swingTimerRef = useRef<number | null>(null);
 
   const [highScore, setHighScore] = useState(() => {
-    if (typeof window === "undefined") return 0;
-    return parseInt(localStorage.getItem("bubble_pop_high_score") || "0", 10);
+    if (typeof window !== "undefined") {
+      localStorage.setItem("bubble_pop_high_score", "50");
+    }
+    return 50;
   });
+
+  // Force high score to 50 (catches HMR cases where state was preserved)
+  useEffect(() => {
+    localStorage.setItem("bubble_pop_high_score", "50");
+    setHighScore(50);
+  }, []);
 
   const startGame = () => {
     setGameState("playing");
     setTimeLeft(GAME_DURATION);
     setScore(0);
+    if (bgmOn) startBgm();
     bubblesRef.current = [];
     particlesRef.current = [];
     popupsRef.current = [];
     shockwavesRef.current = [];
     lastSpawnRef.current = 0;
     mouseRef.current = { x: GAME_W / 2, y: GAME_H / 2 };
+    lastFlipXRef.current = GAME_W / 2;
+    setFacingLeft(false);
+    setSwingPhase("idle");
+    swingPhaseTimersRef.current.forEach((t) => window.clearTimeout(t));
+    swingPhaseTimersRef.current = [];
     setCharPos({ x: GAME_W / 2, y: GAME_H / 2 });
   };
 
   const endGame = useCallback(() => {
     setGameState("gameover");
+    stopBgm();
     setScore((s) => {
       if (s > highScore) {
         setHighScore(s);
@@ -103,27 +126,112 @@ export default function App() {
   }, [highScore]);
 
   const spawnBubble = () => {
-    const radius = getRandom(20, 36);
+    const radius = getRandom(32, 58);
     bubblesRef.current.push({
       id: bubbleIdCounter.current++,
       x: getRandom(radius, GAME_W - radius),
       y: GAME_H + radius * 2,
       radius,
-      speed: getRandom(1.2, 2.5),
+      speed: getRandom(1.1, 2.2),
       isPopping: false,
       popFrame: 0,
     });
   };
 
-  const playPopSound = (pitch: number) => {
-    if (typeof window === "undefined") return;
+  const ensureAudio = () => {
+    if (typeof window === "undefined") return null;
     if (!audioCtxRef.current) {
       const AC = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-      if (!AC) return;
+      if (!AC) return null;
       audioCtxRef.current = new AC();
     }
     const ctx = audioCtxRef.current;
     if (ctx.state === "suspended") ctx.resume();
+    return ctx;
+  };
+
+  // Underwater chiptune BGM: bass + melody pattern, loops forever
+  const startBgm = () => {
+    const ctx = ensureAudio();
+    if (!ctx) return;
+    if (bgmStopRef.current) return; // already running
+
+    // Master gain for BGM (separate from pop SFX)
+    const master = ctx.createGain();
+    master.gain.value = 0.06;
+    master.connect(ctx.destination);
+    bgmGainRef.current = master;
+
+    // 16-step pattern @ ~140 BPM (8th notes = 214ms each)
+    const STEP_MS = 214;
+    // Melody (Hz): C minor pentatonic underwater feel
+    const melody = [
+      523.25, 622.25, 783.99, 622.25, 523.25, 466.16, 392.00, 466.16,
+      523.25, 622.25, 783.99, 932.33, 783.99, 622.25, 523.25, 0,
+    ];
+    // Bass (one note every 4 steps)
+    const bass = [130.81, 174.61, 130.81, 196.00];
+
+    let step = 0;
+    let stopped = false;
+
+    const playNote = (freq: number, type: OscillatorType, duration: number, volume: number) => {
+      if (freq === 0) return;
+      const now = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = type;
+      osc.frequency.value = freq;
+      g.gain.setValueAtTime(0, now);
+      g.gain.linearRampToValueAtTime(volume, now + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.001, now + duration);
+      osc.connect(g).connect(master);
+      osc.start(now);
+      osc.stop(now + duration);
+    };
+
+    const tick = () => {
+      if (stopped) return;
+      // Melody
+      playNote(melody[step], "square", 0.18, 0.55);
+      // Bass: every 4 steps
+      if (step % 4 === 0) {
+        playNote(bass[(step / 4) % bass.length], "triangle", 0.5, 0.9);
+      }
+      step = (step + 1) % melody.length;
+      setTimeout(tick, STEP_MS);
+    };
+    tick();
+
+    bgmStopRef.current = () => {
+      stopped = true;
+      try {
+        master.gain.cancelScheduledValues(ctx.currentTime);
+        master.gain.setValueAtTime(0, ctx.currentTime);
+        master.disconnect();
+      } catch { /* noop */ }
+    };
+  };
+
+  const stopBgm = () => {
+    if (bgmStopRef.current) {
+      bgmStopRef.current();
+      bgmStopRef.current = null;
+    }
+    // Belt and suspenders: if any master gain still attached, kill it
+    if (bgmGainRef.current) {
+      try {
+        bgmGainRef.current.gain.cancelScheduledValues(0);
+        bgmGainRef.current.gain.value = 0;
+        bgmGainRef.current.disconnect();
+      } catch { /* noop */ }
+      bgmGainRef.current = null;
+    }
+  };
+
+  const playPopSound = (pitch: number) => {
+    const ctx = ensureAudio();
+    if (!ctx) return;
     const now = ctx.currentTime;
 
     // Main pop oscillator (descending pitch for "bloop")
@@ -187,6 +295,15 @@ export default function App() {
     if (swingTimerRef.current) window.clearTimeout(swingTimerRef.current);
     swingTimerRef.current = window.setTimeout(() => setSwinging(false), SWING_DURATION_MS);
 
+    // 3-phase swing animation: mid → down → idle (fast return)
+    swingPhaseTimersRef.current.forEach((t) => window.clearTimeout(t));
+    swingPhaseTimersRef.current = [];
+    setSwingPhase("mid");
+    swingPhaseTimersRef.current.push(
+      window.setTimeout(() => setSwingPhase("down"), 90),
+      window.setTimeout(() => setSwingPhase("idle"), 240),
+    );
+
     let popped = 0;
     bubblesRef.current.forEach((b) => {
       if (b.isPopping) return;
@@ -203,17 +320,22 @@ export default function App() {
   };
 
   const drawPixelBubble = (ctx: CanvasRenderingContext2D, b: Bubble) => {
-    ctx.save();
-    ctx.beginPath();
-    ctx.arc(b.x, b.y, b.radius, 0, Math.PI * 2);
-    ctx.strokeStyle = "white";
-    ctx.lineWidth = 3;
-    ctx.fillStyle = "rgba(173, 216, 230, 0.4)";
-    ctx.stroke();
-    ctx.fill();
-    ctx.fillStyle = "white";
-    ctx.fillRect(b.x - b.radius * 0.4, b.y - b.radius * 0.4, 6, 6);
-    ctx.restore();
+    const img = bubbleImgRef.current;
+    const size = b.radius * 2.2; // sprite is slightly bigger than the radius circle
+    if (img && img.complete) {
+      ctx.drawImage(img, b.x - size / 2, b.y - size / 2, size, size);
+    } else {
+      // Fallback while image loads
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, b.radius, 0, Math.PI * 2);
+      ctx.strokeStyle = "white";
+      ctx.lineWidth = 4;
+      ctx.fillStyle = "rgba(140, 180, 230, 0.35)";
+      ctx.stroke();
+      ctx.fill();
+      ctx.restore();
+    }
   };
 
   const drawPixelPop = (ctx: CanvasRenderingContext2D, b: Bubble) => {
@@ -398,12 +520,12 @@ export default function App() {
       lastSpawnRef.current = timestamp;
     }
 
-    drawPixelBackground(ctx, GAME_W, GAME_H);
+    // Clear canvas (background is now CSS image on stage div)
+    ctx.clearRect(0, 0, GAME_W, GAME_H);
 
     setCharPos((prev) => {
       const dx = mouseRef.current.x - prev.x;
       const dy = mouseRef.current.y - prev.y;
-      if (Math.abs(dx) > 2) setFacingLeft(dx < 0);
       return { x: prev.x + dx * 0.2, y: prev.y + dy * 0.2 };
     });
 
@@ -490,7 +612,13 @@ export default function App() {
     if (canvasRef.current) {
       canvasRef.current.width = GAME_W;
       canvasRef.current.height = GAME_H;
+      const ctx = canvasRef.current.getContext("2d");
+      if (ctx) ctx.imageSmoothingEnabled = false;
     }
+    // Preload bubble sprite
+    const img = new Image();
+    img.src = "/bubble.png";
+    img.onload = () => { bubbleImgRef.current = img; };
   }, []);
 
   useEffect(() => {
@@ -514,7 +642,18 @@ export default function App() {
 
   useEffect(() => () => {
     if (swingTimerRef.current) window.clearTimeout(swingTimerRef.current);
+    swingPhaseTimersRef.current.forEach((t) => window.clearTimeout(t));
+    stopBgm();
   }, []);
+
+  // React to bgmOn toggle during gameplay
+  useEffect(() => {
+    if (gameState === "playing") {
+      if (bgmOn) startBgm();
+      else stopBgm();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bgmOn, gameState]);
 
   const stageToGameCoords = (clientX: number, clientY: number) => {
     if (!stageRef.current) return { x: 0, y: 0 };
@@ -557,7 +696,15 @@ export default function App() {
           onPointerMove={handlePointerMove}
           onPointerDown={handlePointerDown}
           className="relative w-full h-full overflow-hidden rounded-[28px] sm:rounded-[34px] cursor-none touch-none select-none"
-          style={{ aspectRatio: `${GAME_W} / ${GAME_H}` }}
+          style={{
+            aspectRatio: `${GAME_W} / ${GAME_H}`,
+            backgroundColor: "#0d4daa",
+            backgroundImage: "url('/background.png')",
+            backgroundSize: "cover",
+            backgroundPosition: "bottom center",
+            backgroundRepeat: "no-repeat",
+            imageRendering: "pixelated",
+          }}
         >
           {/* CRT scanlines */}
           <div className="absolute inset-0 z-40 pointer-events-none opacity-15 bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.25)_50%)] bg-[length:100%_2px]" />
@@ -575,94 +722,126 @@ export default function App() {
                 animate={{
                   left: `${(charPos.x / GAME_W) * 100}%`,
                   top: `${(charPos.y / GAME_H) * 100}%`,
-                  scaleX: facingLeft ? -1 : 1,
                 }}
-                transition={{ type: "spring", stiffness: 280, damping: 20 }}
+                transition={{
+                  type: "spring", stiffness: 280, damping: 20,
+                }}
                 style={{
                   position: "absolute",
-                  width: "30%",
-                  marginLeft: "-15%",
-                  marginTop: "-15%",
+                  width: "27%",
+                  marginLeft: "-13.5%",
+                  marginTop: "-13.5%",
                   zIndex: 20,
                   pointerEvents: "none",
                 }}
               >
-                <AnimatePresence mode="wait">
-                  {swinging ? (
-                    <motion.img
-                      key="swing"
-                      src="/swing.png"
-                      alt="swing"
-                      draggable={false}
-                      initial={{ scale: 0.85, y: -10 }}
-                      animate={{ scale: [0.85, 1.1, 1], y: [-10, 5, 0] }}
-                      exit={{ scale: 1, opacity: 0.7 }}
-                      transition={{ duration: SWING_DURATION_MS / 1000, times: [0, 0.4, 1] }}
-                      style={{ imageRendering: "pixelated", width: "100%", height: "auto", display: "block" }}
-                      className="drop-shadow-[0_3px_0_rgba(0,0,0,0.4)]"
-                    />
-                  ) : (
-                    <motion.img
-                      key="idle"
-                      src="/character.png"
-                      alt="character"
-                      draggable={false}
-                      animate={{ y: [0, -4, 0] }}
-                      transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
-                      style={{ imageRendering: "pixelated", width: "100%", height: "auto", display: "block" }}
-                      className="drop-shadow-[0_3px_0_rgba(0,0,0,0.4)]"
-                    />
-                  )}
-                </AnimatePresence>
+                {/* Preload all sprites to avoid flicker on phase change */}
+                <img src="/midswing.png" alt="" style={{ display: "none" }} />
+                <img src="/swing.png" alt="" style={{ display: "none" }} />
+
+                {swingPhase === "idle" && (
+                  <motion.img
+                    src="/character.png"
+                    alt="character"
+                    draggable={false}
+                    animate={{ y: [0, -4, 0] }}
+                    transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
+                    style={{ imageRendering: "pixelated", width: "100%", height: "auto", display: "block" }}
+                    className="drop-shadow-[0_3px_0_rgba(0,0,0,0.4)]"
+                  />
+                )}
+                {swingPhase === "mid" && (
+                  <img
+                    src="/midswing.png"
+                    alt="mid-swing"
+                    draggable={false}
+                    style={{ imageRendering: "pixelated", width: "115%", height: "auto", display: "block", marginLeft: "-7%" }}
+                    className="drop-shadow-[0_3px_0_rgba(0,0,0,0.4)]"
+                  />
+                )}
+                {swingPhase === "down" && (
+                  <img
+                    src="/swing.png"
+                    alt="swing"
+                    draggable={false}
+                    style={{ imageRendering: "pixelated", width: "100%", height: "auto", display: "block" }}
+                    className="drop-shadow-[0_3px_0_rgba(0,0,0,0.4)]"
+                  />
+                )}
               </motion.div>
 
-              {/* Swing range ring */}
+              {/* Bat impact — white flash burst at impact point (below character) */}
               {swinging && (
-                <motion.div
-                  key={`swing-${Date.now()}`}
-                  initial={{ scale: 0.4, opacity: 0.9 }}
-                  animate={{ scale: 1.4, opacity: 0 }}
-                  transition={{ duration: SWING_DURATION_MS / 1000 }}
-                  style={{
-                    position: "absolute",
-                    left: `${(charPos.x / GAME_W) * 100}%`,
-                    top: `${(charPos.y / GAME_H) * 100}%`,
-                    width: `${(SWING_RANGE * 2 / GAME_W) * 100}%`,
-                    height: `${(SWING_RANGE * 2 / GAME_W) * 100}%`,
-                    marginLeft: `${(-SWING_RANGE / GAME_W) * 100}%`,
-                    marginTop: `${(-SWING_RANGE / GAME_W) * 100}%`,
-                    borderRadius: "50%",
-                    border: "3px solid #FACC15",
-                    zIndex: 15,
-                    pointerEvents: "none",
-                  }}
-                />
-              )}
-
-              {/* Smash starburst */}
-              {swinging && (
-                <motion.div
-                  key={`smash-${Date.now()}`}
-                  initial={{ scale: 0, opacity: 1 }}
-                  animate={{ scale: [0, 1.6, 1.8], opacity: [1, 1, 0] }}
-                  transition={{ duration: SWING_DURATION_MS / 1000, times: [0, 0.4, 1] }}
-                  style={{
-                    position: "absolute",
-                    left: `${(charPos.x / GAME_W) * 100}%`,
-                    top: `${((charPos.y + 30) / GAME_H) * 100}%`,
-                    width: "22%",
-                    aspectRatio: "1.5",
-                    marginLeft: "-11%",
-                    marginTop: "-6%",
-                    zIndex: 19,
-                    pointerEvents: "none",
-                  }}
-                >
-                  <svg viewBox="0 0 120 80" width="100%" height="100%" style={{ shapeRendering: "crispEdges" }}>
-                    <polygon points="60,0 70,28 100,18 78,40 110,50 76,52 95,75 60,55 28,75 50,52 12,50 42,40 18,18 50,28" fill="#FACC15" stroke="#000" strokeWidth="3" />
-                    <polygon points="60,12 67,30 90,24 76,40 95,48 75,50 60,60 45,50 25,48 44,40 30,24 53,30" fill="#FEF3C7" />
-                  </svg>
-                </motion.div>
+                <>
+                  {/* Brief white flash overlay */}
+                  <motion.div
+                    key={`flash-${Date.now()}`}
+                    initial={{ opacity: 0.6 }}
+                    animate={{ opacity: 0 }}
+                    transition={{ duration: 0.12 }}
+                    className="absolute inset-0 bg-white pointer-events-none z-[14]"
+                  />
+                  {/* Impact starburst at bat-hit location (below-front of character) */}
+                  <motion.div
+                    key={`impact-${Date.now()}`}
+                    initial={{ scale: 0, opacity: 1, rotate: -10 }}
+                    animate={{ scale: [0, 1.8, 2.2], opacity: [1, 1, 0], rotate: 20 }}
+                    transition={{ duration: SWING_DURATION_MS / 1000, times: [0, 0.35, 1] }}
+                    style={{
+                      position: "absolute",
+                      left: `${(charPos.x / GAME_W) * 100}%`,
+                      top: `${((charPos.y + 40) / GAME_H) * 100}%`,
+                      width: "26%",
+                      aspectRatio: "1",
+                      marginLeft: "-13%",
+                      marginTop: "-13%",
+                      zIndex: 19,
+                      pointerEvents: "none",
+                    }}
+                  >
+                    <svg viewBox="0 0 100 100" width="100%" height="100%" style={{ shapeRendering: "crispEdges" }}>
+                      <polygon points="50,0 60,30 92,20 68,42 100,50 68,58 92,80 60,70 50,100 40,70 8,80 32,58 0,50 32,42 8,20 40,30" fill="#FACC15" stroke="#000" strokeWidth="4" />
+                      <polygon points="50,15 57,32 80,25 65,43 85,50 65,57 80,75 57,68 50,85 43,68 20,75 35,57 15,50 35,43 20,25 43,32" fill="#FEF3C7" />
+                      <polygon points="50,32 55,46 65,50 55,54 50,68 45,54 35,50 45,46" fill="#FFFFFF" />
+                    </svg>
+                  </motion.div>
+                  {/* Lightning crack lines radiating from impact */}
+                  <motion.svg
+                    key={`crack-${Date.now()}`}
+                    initial={{ scale: 0.3, opacity: 1 }}
+                    animate={{ scale: 1.6, opacity: 0 }}
+                    transition={{ duration: SWING_DURATION_MS / 1000 }}
+                    viewBox="0 0 100 100"
+                    style={{
+                      position: "absolute",
+                      left: `${(charPos.x / GAME_W) * 100}%`,
+                      top: `${((charPos.y + 40) / GAME_H) * 100}%`,
+                      width: "40%",
+                      aspectRatio: "1",
+                      marginLeft: "-20%",
+                      marginTop: "-20%",
+                      zIndex: 18,
+                      pointerEvents: "none",
+                    }}
+                  >
+                    <g stroke="#FFFFFF" strokeWidth="2.5" fill="none" strokeLinecap="round">
+                      <polyline points="50,50 70,40 78,46 90,38" />
+                      <polyline points="50,50 30,42 22,48 8,40" />
+                      <polyline points="50,50 60,30 56,20 66,10" />
+                      <polyline points="50,50 38,72 44,82 36,94" />
+                      <polyline points="50,50 72,62 80,58 92,68" />
+                      <polyline points="50,50 28,62 22,58 10,68" />
+                    </g>
+                    <g stroke="#FACC15" strokeWidth="1.5" fill="none" strokeLinecap="round">
+                      <polyline points="50,50 70,40 78,46 90,38" />
+                      <polyline points="50,50 30,42 22,48 8,40" />
+                      <polyline points="50,50 60,30 56,20 66,10" />
+                      <polyline points="50,50 38,72 44,82 36,94" />
+                      <polyline points="50,50 72,62 80,58 92,68" />
+                      <polyline points="50,50 28,62 22,58 10,68" />
+                    </g>
+                  </motion.svg>
+                </>
               )}
 
               {/* HUD top bar */}
@@ -694,8 +873,15 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Pause/Restart button */}
-              <div className="absolute bottom-3 right-3 z-30 pointer-events-auto">
+              {/* Bottom-right controls: BGM toggle + Restart */}
+              <div className="absolute bottom-3 right-3 z-30 pointer-events-auto flex gap-2">
+                <button
+                  onClick={() => setBgmOn((v) => !v)}
+                  aria-label="toggle music"
+                  className="bg-black/70 backdrop-blur-sm border-2 border-white/50 text-white w-11 h-11 rounded-full flex items-center justify-center text-base hover:bg-white/20 active:scale-95 transition"
+                >
+                  {bgmOn ? "🎵" : "🔇"}
+                </button>
                 <button
                   onClick={endGame}
                   aria-label="restart"
@@ -723,71 +909,71 @@ export default function App() {
                 >
                   {gameState === "menu" ? (
                     <>
-                      <div className="text-[10px] text-cyan-300 tracking-[0.3em] mb-1">ARCADE</div>
-                      <h1 className="text-3xl text-white tracking-[0.15em] leading-tight drop-shadow-[3px_3px_0_rgba(0,0,0,0.5)] mb-1">
+                      <div className="text-[9px] sm:text-[10px] text-cyan-300 tracking-[0.25em] mb-2">by codiumlab</div>
+                      <h1 className="text-3xl sm:text-4xl text-white tracking-tight leading-tight drop-shadow-[3px_3px_0_rgba(0,0,0,0.5)] mb-2">
                         BUBBLE
                       </h1>
-                      <h1 className="text-3xl text-yellow-300 tracking-[0.15em] leading-tight drop-shadow-[3px_3px_0_rgba(0,0,0,0.5)] mb-6">
+                      <h1 className="text-3xl sm:text-4xl text-yellow-300 tracking-tight leading-tight drop-shadow-[3px_3px_0_rgba(0,0,0,0.5)] mb-8">
                         POP
                       </h1>
 
-                      <div className="bg-black/40 rounded-2xl p-4 mb-6 border border-white/10">
-                        <p className="text-[10px] text-blue-100 leading-loose">
-                          🖱️ 손가락(마우스)으로 캐릭터 이동<br />
-                          💥 탭 / 클릭으로 클럽 휘두르기<br />
-                          🫧 주변 물방울 한 번에 터뜨리기!
-                        </p>
+                      <div className="bg-black/40 rounded-2xl p-5 mb-6 border border-white/10">
+                        <ul className="text-sm text-blue-100 leading-loose space-y-1.5 text-center tracking-tight">
+                          <li>🖱️ 마우스로 이동</li>
+                          <li>💥 클릭으로 휘두르기</li>
+                          <li>🫧 물방울 터뜨리기!</li>
+                        </ul>
                       </div>
 
-                      <div className="flex items-center justify-center gap-1.5 mb-6 text-[10px] text-cyan-300">
+                      <div className="flex items-center justify-center gap-2 mb-6 text-sm text-cyan-300">
                         <span>최고 점수</span>
-                        <span className="text-yellow-300">★</span>
-                        <span className="text-white font-bold">{highScore}</span>
+                        <span className="text-yellow-300 text-base">★</span>
+                        <span className="text-white font-bold text-base">{highScore}</span>
                       </div>
 
                       <motion.button
                         whileTap={{ scale: 0.93 }}
                         whileHover={{ scale: 1.03 }}
                         onClick={startGame}
-                        className="w-full bg-gradient-to-b from-yellow-300 to-yellow-500 text-black px-8 py-4 font-bold text-lg border-b-4 border-yellow-700 rounded-2xl shadow-[0_6px_0_rgba(0,0,0,0.3)] tracking-widest"
+                        className="w-full bg-gradient-to-b from-yellow-300 to-yellow-500 text-black px-8 py-5 font-bold text-2xl border-b-4 border-yellow-700 rounded-2xl shadow-[0_6px_0_rgba(0,0,0,0.3)] tracking-widest"
                       >
                         START
                       </motion.button>
                     </>
                   ) : (
                     <>
-                      <div className="text-[10px] text-red-300 tracking-[0.3em] mb-1">FINISHED</div>
-                      <h1 className="text-3xl text-white tracking-[0.15em] mb-5 drop-shadow-[3px_3px_0_rgba(0,0,0,0.5)]">
+                      <div className="text-sm text-red-300 tracking-[0.3em] mb-2">FINISHED</div>
+                      <h1 className="text-4xl sm:text-5xl text-white tracking-[0.15em] mb-6 drop-shadow-[3px_3px_0_rgba(0,0,0,0.5)]">
                         GAME OVER
                       </h1>
 
-                      <div className="bg-black/40 rounded-2xl p-5 mb-5 border border-white/10">
-                        <div className="text-[10px] text-cyan-300 mb-1">SCORE</div>
-                        <div className="text-5xl text-yellow-300 font-bold tracking-widest drop-shadow-[2px_2px_0_rgba(0,0,0,0.5)]">
+                      <div className="bg-black/40 rounded-2xl p-5 mb-6 border border-white/10">
+                        <div className="text-sm text-cyan-300 mb-2">SCORE</div>
+                        <div className="text-6xl text-yellow-300 font-bold tracking-widest drop-shadow-[2px_2px_0_rgba(0,0,0,0.5)]">
                           {score}
                         </div>
                         {score > 0 && score >= highScore && (
                           <motion.div
                             animate={{ scale: [1, 1.1, 1] }}
                             transition={{ duration: 0.6, repeat: Infinity }}
-                            className="text-yellow-300 text-xs mt-3"
+                            className="text-yellow-300 text-base mt-4"
                           >
                             ⭐ NEW HIGH SCORE ⭐
                           </motion.div>
                         )}
                       </div>
 
-                      <div className="flex items-center justify-center gap-1.5 mb-5 text-[10px] text-cyan-300">
+                      <div className="flex items-center justify-center gap-2 mb-6 text-sm text-cyan-300">
                         <span>최고 점수</span>
-                        <span className="text-yellow-300">★</span>
-                        <span className="text-white font-bold">{highScore}</span>
+                        <span className="text-yellow-300 text-base">★</span>
+                        <span className="text-white font-bold text-base">{highScore}</span>
                       </div>
 
                       <motion.button
                         whileTap={{ scale: 0.93 }}
                         whileHover={{ scale: 1.03 }}
                         onClick={startGame}
-                        className="w-full bg-gradient-to-b from-cyan-300 to-cyan-500 text-black px-8 py-4 font-bold text-lg border-b-4 border-cyan-700 rounded-2xl shadow-[0_6px_0_rgba(0,0,0,0.3)] tracking-widest"
+                        className="w-full bg-gradient-to-b from-cyan-300 to-cyan-500 text-black px-8 py-5 font-bold text-2xl border-b-4 border-cyan-700 rounded-2xl shadow-[0_6px_0_rgba(0,0,0,0.3)] tracking-widest"
                       >
                         REPLAY
                       </motion.button>
